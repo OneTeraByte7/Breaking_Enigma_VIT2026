@@ -575,7 +575,7 @@ export default function App() {
               <span className="w-8 h-[1px] bg-accent" />
               Secure Metadata-Resistant Protocol
             </div>
-            <h1 className="text-7xl lg:text-9xl font-bold tracking-tighter leading-[0.85] mb-8 uppercase">
+            <h1 className="text-5xl lg:text-7xl font-bold tracking-tighter leading-[0.85] mb-8 uppercase">
               Unlock <br />
               what was <br />
               <span className="text-accent">never <br /> obvious.</span>
