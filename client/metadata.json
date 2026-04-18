@@ -1,0 +1,6 @@
+{
+  "name": "Velora",
+  "description": "Unlock what was never obvious. A metadata-resistant, anonymous multi-modal messenger with decoy traffic and end-to-end encryption.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": []
+}

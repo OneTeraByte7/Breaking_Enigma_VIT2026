@@ -7,7 +7,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -62,13 +62,28 @@ app = FastAPI(
 )
 
 # CORS – allow all origins during dev; tighten in production
+# WebSocket requires special handling - allow all for dev
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_origins=["*"],  # WebSockets need broader support
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Custom middleware to log and accept WebSocket upgrade requests
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all incoming requests including upgrade requests."""
+    if request.url.path.startswith('/ws/'):
+        logger.debug(f"WebSocket upgrade request to {request.url.path} from {request.client}")
+    response = await call_next(request)
+    # Ensure WebSocket upgrade requests get proper headers
+    if request.url.path.startswith('/ws/'):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
 
 # Mount routers
 app.include_router(queues.router, prefix="/api/v1", tags=["Queues"])

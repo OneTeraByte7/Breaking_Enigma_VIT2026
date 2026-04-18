@@ -12,14 +12,14 @@ deployments, replace with Redis pub/sub.
 import asyncio
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 @dataclass
 class QueueState:
     """State for a single queue."""
     queue_id: str
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     real_message_count: int = 0
     total_message_count: int = 0     # includes decoys
     messages: List[dict] = field(default_factory=list)

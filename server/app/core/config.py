@@ -15,7 +15,13 @@ class Settings(BaseSettings):
     RELOAD: bool = False
 
     # CORS
-    ALLOWED_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:3000"]
+    ALLOWED_ORIGINS: List[str] = [
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://localhost:5174",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000"
+    ]
 
     # Queue settings
     QUEUE_ID_BYTES: int = 32          # 32 random bytes → 64-char hex queue ID
