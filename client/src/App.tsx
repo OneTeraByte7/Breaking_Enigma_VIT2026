@@ -40,6 +40,40 @@ const bytesToBase64 = (bytes: Uint8Array): string => {
   return btoa(binary);
 };
 
+const PANIC_PASSPHRASE_STORAGE_KEY = 'velora.panic.passphrase';
+
+const PANIC_AUTO_REPLIES = [
+  'Done. I will bring the printed notes tomorrow.',
+  'Lets finalize section two after lunch.',
+  'Shared the worksheet draft in the class drive.',
+  'Sure, we can review the timeline in the evening.',
+  'Okay, adding this to our meeting checklist.'
+];
+
+const createPanicSeedMessages = (): Message[] => {
+  const now = Date.now();
+  return [
+    {
+      id: 'panic-seed-1',
+      sender: 'them',
+      text: 'Reminder: submit the project abstract by 5 PM.',
+      timestamp: now - 1000 * 60 * 16,
+    },
+    {
+      id: 'panic-seed-2',
+      sender: 'me',
+      text: 'Got it. I will upload the final PDF before 4:30.',
+      timestamp: now - 1000 * 60 * 12,
+    },
+    {
+      id: 'panic-seed-3',
+      sender: 'them',
+      text: 'Perfect. Also keep 2-3 slides for quick demo.',
+      timestamp: now - 1000 * 60 * 9,
+    },
+  ];
+};
+
 export default function App() {
   const [view, setView] = useState<View>('LANDING');
   const [queueId, setQueueId] = useState<string>('');
@@ -53,6 +87,22 @@ export default function App() {
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [wsRetryTick, setWsRetryTick] = useState(0);
   const [hasJoinedPeer, setHasJoinedPeer] = useState<boolean>(false);
+  const [panicMode, setPanicMode] = useState(false);
+  const [panicPassphrase, setPanicPassphrase] = useState<string>(() => {
+    try {
+      return window.localStorage.getItem(PANIC_PASSPHRASE_STORAGE_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
+  const [panicSetupOpen, setPanicSetupOpen] = useState(false);
+  const [panicSetupValue, setPanicSetupValue] = useState('');
+  const [panicSetupConfirm, setPanicSetupConfirm] = useState('');
+  const [panicSetupError, setPanicSetupError] = useState('');
+  const [panicUnlockInput, setPanicUnlockInput] = useState('');
+  const [panicUnlockError, setPanicUnlockError] = useState('');
+  const [panicDraft, setPanicDraft] = useState('');
+  const [panicMessages, setPanicMessages] = useState<Message[]>(() => createPanicSeedMessages());
   const wsRef = useRef<WebSocket | null>(null);
   
   const tpkRef = useRef<Uint8Array | null>(null); // Ref for theirPublicKey to use in WS callbacks
@@ -86,6 +136,124 @@ export default function App() {
       const details = await res.text().catch(() => res.statusText);
       throw new Error(`Relay post failed (${res.status}): ${details}`);
     }
+  };
+
+  const persistPanicPassphrase = (nextPassphrase: string) => {
+    setPanicPassphrase(nextPassphrase);
+    try {
+      window.localStorage.setItem(PANIC_PASSPHRASE_STORAGE_KEY, nextPassphrase);
+    } catch {
+      // Ignore storage failures; panic mode will still work for this session.
+    }
+  };
+
+  const resetPanicPersonaForNewSession = () => {
+    setPanicMode(false);
+    setPanicSetupOpen(false);
+    setPanicSetupValue('');
+    setPanicSetupConfirm('');
+    setPanicSetupError('');
+    setPanicUnlockInput('');
+    setPanicUnlockError('');
+    setPanicDraft('');
+    setPanicMessages(createPanicSeedMessages());
+    setPanicPassphrase('');
+    try {
+      window.localStorage.removeItem(PANIC_PASSPHRASE_STORAGE_KEY);
+    } catch {
+      // Ignore storage cleanup failures.
+    }
+  };
+
+  const endCurrentSession = () => {
+    setView('LANDING');
+    setQueueId('');
+    setMessages([]);
+    tpkSetter(null);
+    setHasJoinedPeer(false);
+    resetPanicPersonaForNewSession();
+  };
+
+  const activatePanicMode = () => {
+    if (panicMode) return;
+
+    if (!panicPassphrase) {
+      setPanicSetupOpen(true);
+      return;
+    }
+
+    setPanicUnlockInput('');
+    setPanicUnlockError('');
+    setPanicMode(true);
+  };
+
+  const savePanicSetup = () => {
+    const pass = panicSetupValue.trim();
+    const confirm = panicSetupConfirm.trim();
+
+    if (pass.length < 4) {
+      setPanicSetupError('Passphrase must be at least 4 characters.');
+      return;
+    }
+
+    if (pass !== confirm) {
+      setPanicSetupError('Passphrase and confirmation do not match.');
+      return;
+    }
+
+    persistPanicPassphrase(pass);
+    setPanicSetupOpen(false);
+    setPanicSetupValue('');
+    setPanicSetupConfirm('');
+    setPanicSetupError('');
+    setPanicUnlockInput('');
+    setPanicUnlockError('');
+    setPanicMode(true);
+  };
+
+  const unlockPanicMode = () => {
+    if (!panicPassphrase) {
+      setPanicUnlockError('No passphrase configured. Set one first.');
+      return;
+    }
+
+    if (panicUnlockInput.trim() !== panicPassphrase) {
+      setPanicUnlockError('Incorrect passphrase.');
+      return;
+    }
+
+    setPanicMode(false);
+    setPanicUnlockInput('');
+    setPanicUnlockError('');
+  };
+
+  const sendPanicMessage = () => {
+    const text = panicDraft.trim();
+    if (!text) return;
+
+    setPanicMessages((prev) => [
+      ...prev,
+      {
+        id: `panic-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        sender: 'me',
+        text,
+        timestamp: Date.now(),
+      },
+    ]);
+    setPanicDraft('');
+
+    const autoReply = PANIC_AUTO_REPLIES[Math.floor(Math.random() * PANIC_AUTO_REPLIES.length)];
+    window.setTimeout(() => {
+      setPanicMessages((prev) => [
+        ...prev,
+        {
+          id: `panic-reply-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          sender: 'them',
+          text: autoReply,
+          timestamp: Date.now(),
+        },
+      ]);
+    }, 500 + Math.floor(Math.random() * 1000));
   };
 
   // Step 2: Queue Gen
@@ -125,6 +293,7 @@ export default function App() {
     // Clear local state
     setMessages([]);
     tpkSetter(null);
+    resetPanicPersonaForNewSession();
     // Create a new queue
     createNewQueue();
   };
@@ -214,6 +383,19 @@ export default function App() {
   };
 
   useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (view !== 'MESSENGER') return;
+      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'p') {
+        event.preventDefault();
+        activatePanicMode();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [view, panicMode, panicPassphrase, panicSetupOpen]);
+
+  useEffect(() => {
     if (queueId && view === 'MESSENGER') {
       // Connect if: we created our own queue OR we joined a peer's queue
       if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
@@ -261,6 +443,11 @@ export default function App() {
       socket.onmessage = async (event) => {
         console.log('[WS] Message received:', event.data);
         const payload = JSON.parse(event.data);
+
+        if (payload.type === 'expiry') {
+          endCurrentSession();
+          return;
+        }
         
         // Handle split delivery parts
         if (payload.type === 'part') {
@@ -478,6 +665,7 @@ export default function App() {
       // Remote peer purged the session
       setMessages([]);
       tpkSetter(null);
+      resetPanicPersonaForNewSession();
     }
     else {
       // Regular Message - Deduplicate by mid
@@ -499,7 +687,7 @@ export default function App() {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, panicMessages, panicMode]);
 
   const sendMessage = async () => {
     if (!inputText.trim() || !ws || !theirPublicKey) return;
@@ -792,20 +980,44 @@ export default function App() {
     <div className="h-screen flex flex-col bg-paper">
       <div className="border-b border-line p-4 flex justify-between items-center z-10 bg-white/50 backdrop-blur-md">
         <div className="flex items-center gap-4">
-          <button onClick={() => { setView('LANDING'); setHasJoinedPeer(false); }} className="p-2 hover:bg-ink hover:text-white transition-colors">
+          <button onClick={endCurrentSession} className="p-2 hover:bg-ink hover:text-white transition-colors">
             <X size={20} />
           </button>
           <div>
-            <div className="font-mono font-bold text-xs tracking-widest text-accent uppercase">VELORA_SESSION</div>
-            <div className="font-mono text-[10px] opacity-40 break-all max-w-[250px]">{queueId}</div>
-            {hasJoinedPeer && <div className="font-mono text-[10px] text-green-500 mt-1">✓ Joined Peer Queue</div>}
+            {panicMode ? (
+              <>
+                <div className="font-mono font-bold text-xs tracking-widest text-accent uppercase">CLASSROOM_NOTES</div>
+                <div className="font-mono text-[10px] opacity-40 break-all max-w-[250px]">group-planning-thread</div>
+                <div className="font-mono text-[10px] text-green-500 mt-1">✓ Shared Study Notes</div>
+              </>
+            ) : (
+              <>
+                <div className="font-mono font-bold text-xs tracking-widest text-accent uppercase">VELORA_SESSION</div>
+                <div className="font-mono text-[10px] opacity-40 break-all max-w-[250px]">{queueId}</div>
+                {hasJoinedPeer && <div className="font-mono text-[10px] text-green-500 mt-1">✓ Joined Peer Queue</div>}
+              </>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-4">
-           <div className={`w-2 h-2 rounded-full ${ws ? 'bg-green-500' : 'bg-red-500 animate-pulse'}`} />
-           <span className="font-mono text-[10px] uppercase font-bold tracking-widest text-ink/70">
-             {ws ? 'Connected' : 'Offline'}
-           </span>
+           {!panicMode && (
+             <>
+               <div className={`w-2 h-2 rounded-full ${ws ? 'bg-green-500' : 'bg-red-500 animate-pulse'}`} />
+               <span className="font-mono text-[10px] uppercase font-bold tracking-widest text-ink/70">
+                 {ws ? 'Connected' : 'Offline'}
+               </span>
+             </>
+           )}
+           <button
+             onClick={activatePanicMode}
+             className={`px-3 py-1 border text-[10px] font-mono uppercase tracking-widest font-bold transition-colors ${
+               panicMode
+                 ? 'border-amber-500 text-amber-600 bg-amber-50'
+                 : 'border-red-500 text-red-600 hover:bg-red-600 hover:text-white'
+             }`}
+           >
+             {panicMode ? 'Persona Active' : 'Panic'}
+           </button>
         </div>
       </div>
 
@@ -813,7 +1025,7 @@ export default function App() {
         <div className="technical-grid absolute inset-0 -z-10" />
         
         {/* Queue Connection Modal - shown only when waiting for peer to join */}
-        {!hasJoinedPeer && (
+        {!panicMode && !hasJoinedPeer && (
           <div className="absolute inset-0 bg-paper/95 backdrop-blur-md z-20 flex flex-col items-center justify-center p-8 text-center pointer-events-none">
             <motion.div 
               initial={{ scale: 0.9, opacity: 0 }} 
@@ -899,6 +1111,80 @@ export default function App() {
         )}
 
         {/* Chat Interface - show once queue is connected */}
+        {panicMode ? (
+          <div className="flex-1 p-4 md:p-8 overflow-hidden">
+            <div className="max-w-4xl mx-auto h-full border border-line bg-white/70 backdrop-blur-sm flex flex-col">
+              <div className="border-b border-line px-5 py-4 flex items-center justify-between">
+                <div>
+                  <div className="font-mono font-bold tracking-wider text-xs uppercase">Study Group Planner</div>
+                  <div className="font-mono text-[10px] opacity-50">Project Timeline Discussion</div>
+                </div>
+                <div className="font-mono text-[10px] opacity-50 uppercase">Persona Mode</div>
+              </div>
+
+              <div ref={scrollRef} className="flex-1 overflow-y-auto p-5 space-y-4">
+                {panicMessages.map((m: Message) => (
+                  <div key={m.id} className={`flex ${m.sender === 'me' ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[80%] p-3 border ${m.sender === 'me' ? 'bg-ink text-paper border-line' : 'bg-white border-line'}`}>
+                      <p className="text-sm leading-relaxed">{m.text}</p>
+                      <div className={`text-[9px] font-mono mt-2 opacity-50 uppercase ${m.sender === 'me' ? 'text-right' : 'text-left'}`}>
+                        {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="border-t border-line p-4 space-y-3">
+                <div className="flex gap-2">
+                  <input
+                    value={panicDraft}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPanicDraft(e.target.value)}
+                    onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && sendPanicMessage()}
+                    placeholder="Add study note..."
+                    className="flex-1 border border-line px-3 py-2 bg-white focus:outline-none focus:border-accent"
+                  />
+                  <button
+                    onClick={sendPanicMessage}
+                    className="px-5 py-2 bg-ink text-paper font-bold text-xs uppercase tracking-wider hover:bg-accent transition-colors"
+                  >
+                    Post
+                  </button>
+                </div>
+
+                <div className="pt-3 border-t border-line/30">
+                  <div className="text-[10px] font-mono uppercase tracking-widest opacity-50 mb-2">
+                    Secure thread hidden. Enter passphrase to restore.
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="password"
+                      value={panicUnlockInput}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                        setPanicUnlockInput(e.target.value);
+                        setPanicUnlockError('');
+                      }}
+                      onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && unlockPanicMode()}
+                      placeholder="Panic passphrase"
+                      className="flex-1 border border-line px-3 py-2 bg-white focus:outline-none focus:border-accent"
+                    />
+                    <button
+                      onClick={unlockPanicMode}
+                      className="px-5 py-2 border border-line font-bold text-xs uppercase tracking-wider hover:bg-ink hover:text-paper transition-colors"
+                    >
+                      Unlock
+                    </button>
+                  </div>
+                  {panicUnlockError && (
+                    <div className="mt-2 text-[10px] font-mono uppercase tracking-wider text-red-600">
+                      {panicUnlockError}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
         <div className="flex-1 flex flex-col md:flex-row p-4 md:p-8 overflow-hidden">
             <div className="flex-1 flex flex-col overflow-hidden">
               <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-6 pr-2 scroll-smooth">
@@ -1117,7 +1403,69 @@ export default function App() {
               </div>
             </div>
           </div>
+        )}
         </div>
+
+      {panicSetupOpen && (
+        <div className="fixed inset-0 z-[100] bg-ink/55 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-paper border border-line p-6 shadow-2xl">
+            <h3 className="font-mono font-bold text-sm uppercase tracking-wider mb-2">Configure Panic Persona</h3>
+            <p className="text-xs opacity-70 mb-4">
+              Set a secret passphrase. You will need it to return from panic persona to secure chat.
+            </p>
+
+            <div className="space-y-3">
+              <input
+                type="password"
+                value={panicSetupValue}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                  setPanicSetupValue(e.target.value);
+                  setPanicSetupError('');
+                }}
+                placeholder="New passphrase"
+                className="w-full border border-line px-3 py-2 bg-white focus:outline-none focus:border-accent"
+              />
+              <input
+                type="password"
+                value={panicSetupConfirm}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                  setPanicSetupConfirm(e.target.value);
+                  setPanicSetupError('');
+                }}
+                onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && savePanicSetup()}
+                placeholder="Confirm passphrase"
+                className="w-full border border-line px-3 py-2 bg-white focus:outline-none focus:border-accent"
+              />
+
+              {panicSetupError && (
+                <div className="text-[10px] font-mono uppercase tracking-wider text-red-600">
+                  {panicSetupError}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  setPanicSetupOpen(false);
+                  setPanicSetupValue('');
+                  setPanicSetupConfirm('');
+                  setPanicSetupError('');
+                }}
+                className="px-4 py-2 border border-line text-xs font-bold uppercase tracking-wider hover:bg-ink hover:text-paper transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={savePanicSetup}
+                className="px-4 py-2 bg-accent text-white text-xs font-bold uppercase tracking-wider hover:bg-ink transition-colors"
+              >
+                Save & Activate
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       </div>
   );
 }
