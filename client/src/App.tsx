@@ -28,6 +28,18 @@ const getAPIBase = () => {
   return `${protocol}//${host}`;
 };
 
+const bytesToBase64 = (bytes: Uint8Array): string => {
+  let binary = '';
+  const chunkSize = 0x8000;
+
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return btoa(binary);
+};
+
 export default function App() {
   const [view, setView] = useState<View>('LANDING');
   const [queueId, setQueueId] = useState<string>('');
@@ -39,12 +51,16 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [ws, setWs] = useState<WebSocket | null>(null);
+  const [wsRetryTick, setWsRetryTick] = useState(0);
   const [hasJoinedPeer, setHasJoinedPeer] = useState<boolean>(false);
+  const wsRef = useRef<WebSocket | null>(null);
   
   const tpkRef = useRef<Uint8Array | null>(null); // Ref for theirPublicKey to use in WS callbacks
   const tpkSetter = (pk: Uint8Array | null) => {
     tpkRef.current = pk;
     setTheirPublicKey(pk);
+    // Unlock messenger view for both peers once a valid peer key is seen.
+    setHasJoinedPeer(Boolean(pk));
   };
   const [stats, setStats] = useState<any>(null);
   const [auditLog, setAuditLog] = useState<string>('');
@@ -58,6 +74,19 @@ export default function App() {
   const audioChunksRef = useRef<Blob[]>([]);
   
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const postCiphertextToRelay = async (targetQueueId: string, ciphertext: string): Promise<void> => {
+    const res = await fetch(`${getAPIBase()}/api/v1/messages/${targetQueueId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ciphertext })
+    });
+
+    if (!res.ok) {
+      const details = await res.text().catch(() => res.statusText);
+      throw new Error(`Relay post failed (${res.status}): ${details}`);
+    }
+  };
 
   // Step 2: Queue Gen
   const createNewQueue = async () => {
@@ -90,11 +119,7 @@ export default function App() {
     if (ws && tpkRef.current) {
       const encrypted = encryptMessage(JSON.stringify({ type: 'purge', sid: sessionToken }), tpkRef.current, keyPair.secretKey);
       const ciphertext = formatCiphertextForRelay(encrypted);
-      await fetch(`${getAPIBase()}/api/v1/messages/${queueId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ciphertext })
-      }).catch(console.error);
+      await postCiphertextToRelay(queueId, ciphertext).catch(console.error);
     }
     
     // Clear local state
@@ -154,19 +179,19 @@ export default function App() {
             const mid = Math.random().toString(36).substring(7);
             const encrypted = encryptMessage(JSON.stringify({ voice: base64, sid: sessionToken, mid }), theirPublicKey, keyPair.secretKey);
             const ciphertext = formatCiphertextForRelay(encrypted);
-            
-            await fetch(`${getAPIBase()}/api/v1/messages/${queueId}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ ciphertext })
-            });
 
-            setMessages((prev: Message[]) => [...prev, {
-              id: mid,
-              sender: 'me',
-              voice: base64,
-              timestamp: Date.now()
-            }]);
+            try {
+              await postCiphertextToRelay(queueId, ciphertext);
+              setMessages((prev: Message[]) => [...prev, {
+                id: mid,
+                sender: 'me',
+                voice: base64,
+                timestamp: Date.now()
+              }]);
+            } catch (err) {
+              console.error('[Voice] Failed to relay recording:', err);
+              alert('Voice note could not be delivered. Try a shorter recording.');
+            }
           }
         };
         reader.readAsDataURL(audioBlob);
@@ -190,7 +215,12 @@ export default function App() {
   useEffect(() => {
     if (queueId && view === 'MESSENGER') {
       // Connect if: we created our own queue OR we joined a peer's queue
-      if (ws) return;
+      if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+      
+      let closedByCleanup = false;
+      let retryTimer: number | undefined;
       
       console.log('[WS] Effect triggered - attempting connection. queueId:', queueId, 'view:', view, 'hasJoinedPeer:', hasJoinedPeer);
       
@@ -204,48 +234,27 @@ export default function App() {
       
       console.log('[WS] Attempting to connect to:', wsUrl);
       const socket = new WebSocket(wsUrl);
+      wsRef.current = socket;
       
       socket.onopen = async () => {
         console.log('[WS] Connected to queue:', queueId);
+        wsRef.current = socket;
         setWs(socket);
         
         // Handshake: Send our public key as base64
         const sendPublicKey = async () => {
-          const pkBase64 = btoa(String.fromCharCode.apply(null, [...keyPair.publicKey] as unknown as number[]));
+          const pkBase64 = bytesToBase64(keyPair.publicKey);
           console.log('[WS] Sending public key handshake, length:', pkBase64.length, 'to queue:', queueId);
           try {
-            const res = await fetch(`${getAPIBase()}/api/v1/messages/${queueId}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ ciphertext: pkBase64 }),
-            });
-            if (!res.ok) {
-              console.error('[WS] Failed to send public key:', res.status, res.statusText);
-            } else {
-              console.log('[WS] Public key sent successfully to queue:', queueId);
-            }
+            await postCiphertextToRelay(queueId, pkBase64);
+            console.log('[WS] Public key sent successfully to queue:', queueId);
           } catch (e) {
             console.error('[WS] Error sending public key:', e);
           }
         };
 
-        // Send immediately
+        // Send once; buffered delivery lets late-joining peers still receive it.
         await sendPublicKey();
-        
-        // Re-send every 5 seconds until we get a peer's key
-        const pkInterval = setInterval(() => {
-          if (tpkRef.current) {
-            // We have peer's key, stop sending
-            clearInterval(pkInterval);
-            console.log('[WS] Peer key received, stopping public key resends');
-          } else {
-            // Still no peer, resend our key
-            sendPublicKey();
-          }
-        }, 5000);
-
-        // Store interval ID for cleanup
-        (socket as any)._pkInterval = pkInterval;
       };
 
       socket.onmessage = async (event) => {
@@ -287,7 +296,7 @@ export default function App() {
               }
               
               // Encode back to base64 for processing
-              const ciphertextB64 = btoa(String.fromCharCode.apply(null, [...combined] as unknown as number[]));
+              const ciphertextB64 = bytesToBase64(combined);
               const data = ciphertextB64;
               console.log('[WS] Reassembled message length:', combined.length, 'base64 length:', data.length);
               
@@ -423,30 +432,45 @@ export default function App() {
 
       socket.onclose = () => {
         console.log('[WS] Connection closed for queue:', queueId);
-        if ((socket as any)._pkInterval) {
-          clearInterval((socket as any)._pkInterval);
+        if (closedByCleanup) return;
+        if (wsRef.current === socket) {
+          wsRef.current = null;
+          setWs(null);
+          // Retry after a short delay to recover from transient socket drops.
+          retryTimer = window.setTimeout(() => {
+            setWsRetryTick((prev) => prev + 1);
+          }, 1200);
         }
-        setWs(null);
       };
 
       socket.onerror = (error: Event) => {
         console.error('[WS] WebSocket error for queue:', queueId, error);
-        if ((socket as any)._pkInterval) {
-          clearInterval((socket as any)._pkInterval);
+        if (wsRef.current === socket) {
+          wsRef.current = null;
+          setWs(null);
         }
-        setWs(null);
       };
       
       return () => {
-        if ((socket as any)._pkInterval) {
-          clearInterval((socket as any)._pkInterval);
+        closedByCleanup = true;
+        if (retryTimer !== undefined) {
+          window.clearTimeout(retryTimer);
         }
-        if (socket.readyState === WebSocket.OPEN) {
+        if (wsRef.current === socket) {
+          wsRef.current = null;
+          setWs(null);
+        }
+        // Detach handlers so an old socket close doesn't clobber the active socket state.
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onclose = null;
+        socket.onerror = null;
+        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
           socket.close();
         }
       };
     }
-  }, [queueId, view, keyPair.publicKey, keyPair.secretKey, hasJoinedPeer]);
+  }, [queueId, view, keyPair.publicKey, keyPair.secretKey, wsRetryTick]);
 
   const handleIncomingDecrypted = async (parsed: any, currentPK: Uint8Array) => {
     if (parsed.type === 'purge') {
@@ -484,19 +508,19 @@ export default function App() {
     const encrypted = encryptMessage(JSON.stringify(msg), theirPublicKey, keyPair.secretKey);
     const ciphertext = formatCiphertextForRelay(encrypted);
     
-    await fetch(`${getAPIBase()}/api/v1/messages/${queueId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ciphertext })
-    });
-
-    setMessages((prev: Message[]) => [...prev, {
-      id: mid,
-      sender: 'me',
-      text: inputText,
-      timestamp: Date.now()
-    }]);
-    setInputText('');
+    try {
+      await postCiphertextToRelay(queueId, ciphertext);
+      setMessages((prev: Message[]) => [...prev, {
+        id: mid,
+        sender: 'me',
+        text: inputText,
+        timestamp: Date.now()
+      }]);
+      setInputText('');
+    } catch (err) {
+      console.error('[Text] Failed to relay message:', err);
+      alert('Message could not be delivered. Please retry.');
+    }
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -509,19 +533,19 @@ export default function App() {
       const mid = Math.random().toString(36).substring(7);
       const encrypted = encryptMessage(JSON.stringify({ image: base64, sid: sessionToken, mid }), theirPublicKey, keyPair.secretKey);
       const ciphertext = formatCiphertextForRelay(encrypted);
-      
-      await fetch(`${getAPIBase()}/api/v1/messages/${queueId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ciphertext })
-      });
 
-      setMessages((prev: Message[]) => [...prev, {
-        id: mid,
-        sender: 'me',
-        image: base64,
-        timestamp: Date.now()
-      }]);
+      try {
+        await postCiphertextToRelay(queueId, ciphertext);
+        setMessages((prev: Message[]) => [...prev, {
+          id: mid,
+          sender: 'me',
+          image: base64,
+          timestamp: Date.now()
+        }]);
+      } catch (err) {
+        console.error('[Image] Failed to relay image:', err);
+        alert('Image could not be delivered. Try a smaller image.');
+      }
     };
     reader.readAsDataURL(file);
   };
@@ -964,19 +988,19 @@ export default function App() {
                             const mid = Math.random().toString(36).substring(7);
                             const encrypted = encryptMessage(JSON.stringify({ voice: base64, sid: sessionToken, mid }), theirPublicKey, keyPair.secretKey);
                             const ciphertext = formatCiphertextForRelay(encrypted);
-                            
-                            await fetch(`${getAPIBase()}/api/v1/messages/${queueId}`, {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ ciphertext })
-                            });
 
-                            setMessages((prev: Message[]) => [...prev, {
-                              id: mid,
-                              sender: 'me',
-                              voice: base64,
-                              timestamp: Date.now()
-                            }]);
+                            try {
+                              await postCiphertextToRelay(queueId, ciphertext);
+                              setMessages((prev: Message[]) => [...prev, {
+                                id: mid,
+                                sender: 'me',
+                                voice: base64,
+                                timestamp: Date.now()
+                              }]);
+                            } catch (err) {
+                              console.error('[Voice Upload] Failed to relay voice note:', err);
+                              alert('Voice note could not be delivered. Try a shorter file.');
+                            }
                           };
                           reader.readAsDataURL(file);
                           e.target.value = '';
