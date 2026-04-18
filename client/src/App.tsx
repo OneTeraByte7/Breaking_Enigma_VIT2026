@@ -142,9 +142,10 @@ export default function App() {
             decoyMessages: 0
           });
           
-          const auditRes = await fetch(`${getAPIBase()}/audit.log`);
-          const auditData = await auditRes.text();
-          setAuditLog(auditData);
+          const auditLines = data.recent_audit_entries
+            .map((entry: any) => `${entry.timestamp},${entry.queue_id_hash},${entry.cipher_hash}`)
+            .join('\n');
+          setAuditLog(`# HASH(QUEUE_ID) | HASH(BLOB) | TIMESTAMP\n${auditLines}`);
         } catch (e) {
           console.error(e);
         }
@@ -575,7 +576,7 @@ export default function App() {
               <span className="w-8 h-[1px] bg-accent" />
               Secure Metadata-Resistant Protocol
             </div>
-            <h1 className="text-5xl lg:text-7xl font-bold tracking-tighter leading-[0.85] mb-8 uppercase">
+            <h1 className="text-xl lg:text-7xl font-bold tracking-tighter leading-[0.85] mb-8 uppercase">
               Unlock <br />
               what was <br />
               <span className="text-accent">never <br /> obvious.</span>
