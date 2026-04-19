@@ -18,6 +18,7 @@ import secrets
 import base64
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 from app.core.config import settings
 from app.core.store import store
@@ -25,7 +26,7 @@ from app.core.store import store
 logger = logging.getLogger("qanonym.split")
 
 
-async def split_and_deliver(queue_id: str, ciphertext_b64: str, message_id: str):
+async def split_and_deliver(queue_id: str, ciphertext_b64: str, message_id: str, expires_at_iso: Optional[str] = None):
     """
     Split ciphertext into two parts and push to the queue with a random delay.
 
@@ -50,6 +51,7 @@ async def split_and_deliver(queue_id: str, ciphertext_b64: str, message_id: str)
         "part_index": 0,
         "total_parts": 2,
         "timestamp": ts,
+        "expires_at": expires_at_iso,
     }
 
     part1_msg = {
@@ -59,6 +61,7 @@ async def split_and_deliver(queue_id: str, ciphertext_b64: str, message_id: str)
         "part_index": 1,
         "total_parts": 2,
         "timestamp": ts,
+        "expires_at": expires_at_iso,
     }
 
     # Deliver part 0 immediately

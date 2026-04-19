@@ -104,6 +104,8 @@ export default function App() {
   const [panicDraft, setPanicDraft] = useState('');
   const [panicMessages, setPanicMessages] = useState<Message[]>(() => createPanicSeedMessages());
   const wsRef = useRef<WebSocket | null>(null);
+  const [selfDestructEnabled, setSelfDestructEnabled] = useState(false);
+  const [selfDestructSeconds, setSelfDestructSeconds] = useState<number>(60);
   
   const tpkRef = useRef<Uint8Array | null>(null); // Ref for theirPublicKey to use in WS callbacks
   const tpkSetter = (pk: Uint8Array | null) => {
@@ -125,11 +127,17 @@ export default function App() {
   
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const postCiphertextToRelay = async (targetQueueId: string, ciphertext: string): Promise<void> => {
+  const postCiphertextToRelay = async (targetQueueId: string, ciphertext: string, messageId?: string): Promise<void> => {
+    const body: any = { ciphertext };
+    if (messageId) body.message_id = messageId;
+    if (selfDestructEnabled && typeof selfDestructSeconds === 'number' && selfDestructSeconds > 0) {
+      body.self_destruct_seconds = selfDestructSeconds;
+    }
+
     const res = await fetch(`${getAPIBase()}/api/v1/messages/${targetQueueId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ciphertext })
+      body: JSON.stringify(body)
     });
 
     if (!res.ok) {
@@ -351,7 +359,7 @@ export default function App() {
             const ciphertext = formatCiphertextForRelay(encrypted);
 
             try {
-              await postCiphertextToRelay(queueId, ciphertext);
+              await postCiphertextToRelay(queueId, ciphertext, mid);
               setMessages((prev: Message[]) => [...prev, {
                 id: mid,
                 sender: 'me',
@@ -429,7 +437,11 @@ export default function App() {
           const pkBase64 = bytesToBase64(keyPair.publicKey);
           console.log('[WS] Sending public key handshake, length:', pkBase64.length, 'to queue:', queueId);
           try {
-            await postCiphertextToRelay(queueId, pkBase64);
+            await fetch(`${getAPIBase()}/api/v1/messages/${queueId}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ciphertext: pkBase64 })
+            });
             console.log('[WS] Public key sent successfully to queue:', queueId);
           } catch (e) {
             console.error('[WS] Error sending public key:', e);
@@ -443,6 +455,14 @@ export default function App() {
       socket.onmessage = async (event) => {
         console.log('[WS] Message received:', event.data);
         const payload = JSON.parse(event.data);
+
+        if (payload.type === 'message_expired') {
+          const mid = payload.message_id;
+          if (mid) {
+            setMessages((prev: Message[]) => prev.filter(m => m.id !== mid));
+          }
+          return;
+        }
 
         if (payload.type === 'expiry') {
           endCurrentSession();
@@ -698,7 +718,7 @@ export default function App() {
     const ciphertext = formatCiphertextForRelay(encrypted);
     
     try {
-      await postCiphertextToRelay(queueId, ciphertext);
+      await postCiphertextToRelay(queueId, ciphertext, mid);
       setMessages((prev: Message[]) => [...prev, {
         id: mid,
         sender: 'me',
@@ -724,7 +744,7 @@ export default function App() {
       const ciphertext = formatCiphertextForRelay(encrypted);
 
       try {
-        await postCiphertextToRelay(queueId, ciphertext);
+        await postCiphertextToRelay(queueId, ciphertext, mid);
         setMessages((prev: Message[]) => [...prev, {
           id: mid,
           sender: 'me',
@@ -770,7 +790,7 @@ export default function App() {
               <span className="text-accent">never <br /> obvious.</span>
             </h1>
             <p className="text-xl max-w-md opacity-70 mb-12 font-medium leading-relaxed">
-              Most secure apps encrypt content but still leak metadata—who talks to whom, and when. Velora kills metadata entirely. No accounts. No IDs. Only queues.
+              Most secure apps encrypt content but still leak metadata who talks to whom, and when. Velora kills metadata entirely. No accounts. No IDs. Only queues.
             </p>
             <div className="flex flex-wrap gap-4">
               <button 
@@ -1239,6 +1259,28 @@ export default function App() {
               </div>
 
               <div className="mt-6 flex flex-col gap-4">
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-2 text-[12px] font-mono">
+                    <input
+                      type="checkbox"
+                      checked={selfDestructEnabled}
+                      onChange={(e) => setSelfDestructEnabled(e.target.checked)}
+                      disabled={!theirPublicKey || !ws}
+                      className="w-4 h-4"
+                    />
+                    <span className="uppercase opacity-80">Self-destruct</span>
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={selfDestructSeconds}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSelfDestructSeconds(Number(e.target.value) || 1)}
+                    disabled={!selfDestructEnabled || !theirPublicKey || !ws}
+                    className="w-24 border border-line px-2 py-1 text-sm bg-white"
+                    title="Seconds until message is destroyed"
+                  />
+                  <div className="text-[10px] font-mono opacity-50">seconds</div>
+                </div>
                 <div className="flex gap-2 h-12">
                   <div className="relative">
                     <input 

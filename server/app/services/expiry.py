@@ -44,6 +44,17 @@ class QueueExpiryService:
             if state is None or state.expired:
                 continue
 
+            # First, prune any per-message expirations
+            try:
+                await store.prune_expired_messages(qid)
+            except Exception:
+                logger.exception(f"Error pruning expired messages for {qid[:8]}...")
+
+            # Refresh state after pruning
+            state = store.get_queue(qid)
+            if state is None or state.expired:
+                continue
+
             count = state.real_message_count
             limit = settings.MAX_MESSAGES_PER_QUEUE
 
