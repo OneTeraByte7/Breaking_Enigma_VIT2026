@@ -20,6 +20,10 @@ from app.core.store import store
 from app.core.config import settings
 from app.models.schemas import CreateQueueResponse, QueueStatusResponse
 
+import logging
+
+logger = logging.getLogger("qanonym.queues")
+
 router = APIRouter()
 
 
@@ -47,6 +51,12 @@ async def create_queue():
 
     queue_id = _generate_queue_id()
     state = await store.create_queue(queue_id)
+
+    # Log a short fingerprint of the generated queue ID (do not log raw ID)
+    qhash = hashlib.sha256(queue_id.encode()).hexdigest()
+    logger.info(
+        f"Created new queue (sha256={qhash[:12]}...) entropy_bytes={settings.QUEUE_ID_BYTES}"
+    )
 
     return CreateQueueResponse(
         queue_id=queue_id,
