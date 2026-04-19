@@ -1274,7 +1274,7 @@ export default function App() {
             <div className="bg-ink text-paper p-4 font-mono text-xs h-[400px] overflow-auto border border-line/20">
               <div className="text-accent mb-4 opacity-70"># HASH(QUEUE_ID) | HASH(BLOB) | TIMESTAMP</div>
               {auditLog.split('\n').filter((l: string) => l.trim()).map((line: string, i: number) => (
-                <div key={i} className="mb-1 border-b border-paper/5 pb-1 last:border-0 hover:bg-paper/5">
+                <div key={i} className="mb-1 border-b border-paper/5 pb-1 last:border-0 hover:bg-paper/5 break-all">
                   {line}
                 </div>
               ))}
@@ -1400,7 +1400,7 @@ export default function App() {
                     COPY
                   </button>
                 </div>
-                <p className="text-[10px] font-mono uppercase opacity-40 mb-3 mt-10 border-t border-line/10 pt-6">Or paste peer's code to join:</p>
+                <p className="text-[10px] font-mono uppercase opacity-40 mb-3 border-t border-line/10 pt-6">Or paste peer's code to join:</p>
                 <div className="flex gap-2 max-w-sm">
                   <input 
                     id="peer-id-input"
