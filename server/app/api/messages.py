@@ -8,6 +8,7 @@ GET  /api/v1/messages/{queue_id}  → poll for pending messages (fallback to WS)
 import base64
 import hashlib
 import uuid
+import secrets
 import logging
 from datetime import datetime, timezone
 from datetime import timedelta
@@ -58,7 +59,21 @@ async def send_message(queue_id: str, body: SendMessageRequest):
     queue_hash, cipher_hash = log_message(queue_id, ciphertext_bytes)
 
     # Determine message_id for split delivery
-    message_id = body.message_id or str(uuid.uuid4())
+    if getattr(body, "message_id", None):
+        message_id = body.message_id
+        mid_sha = hashlib.sha256(message_id.encode()).hexdigest()
+        logger.info(
+            f"Message id provided by client (sha256={mid_sha[:12]}...), will be used as-is"
+        )
+        mid_generation = "client_provided"
+    else:
+        # Use OS-backed CSPRNG for server-generated ids
+        message_id = secrets.token_hex(16)
+        mid_sha = hashlib.sha256(message_id.encode()).hexdigest()
+        logger.info(
+            f"Message id generated server-side via secrets.token_hex (CSPRNG, bytes=16) sha256={mid_sha[:12]}..."
+        )
+        mid_generation = "server_csprng"
 
     # Optional per-message expiry
     expires_at_iso = None
