@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Shield, Lock, EyeOff, Terminal, Activity, X, QrCode, Send, Image as ImageIcon, Trash2, Github, Mic } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
-import { generateKeyPair, encryptMessage, decryptMessage, formatCiphertextForRelay, decryptMessageFromRelay } from './lib/crypto';
+import { generateKeyPair, encryptMessage, decryptMessage, formatCiphertextForRelay, decryptMessageFromRelay } from './lib/crypto.ts';
 
 type Message = {
   id: string;
