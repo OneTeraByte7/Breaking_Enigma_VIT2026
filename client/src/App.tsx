@@ -33,15 +33,28 @@ const getAPIBase = () => {
 };
 
 const bytesToBase64 = (bytes: Uint8Array): string => {
-  let binary = '';
-  const chunkSize = 0x8000;
-
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, i + chunkSize);
-    binary += String.fromCharCode(...chunk);
+  // Prefer browser `btoa` when available; fall back to Node Buffer during build/SSR
+  if (typeof btoa === 'function') {
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
   }
+  // Node fallback
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  return Buffer.from(bytes).toString('base64');
+};
 
-  return btoa(binary);
+const base64ToUint8Array = (b64: string): Uint8Array => {
+  if (typeof atob === 'function') {
+    return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  }
+  // Node fallback
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  return new Uint8Array(Buffer.from(b64, 'base64'));
 };
 
 // Return a URL-safe base64 id from browser CSPRNG
@@ -582,7 +595,7 @@ export default function App() {
               const parts: Uint8Array[] = [];
               for (let i = 0; i < total_parts; i++) {
                 const partB64 = partsBufferRef.current[message_id][i];
-                const partBytes = Uint8Array.from(atob(partB64), c => c.charCodeAt(0));
+                const partBytes = base64ToUint8Array(partB64);
                 parts.push(partBytes);
               }
               
@@ -602,7 +615,7 @@ export default function App() {
               
               // Case A: Check if it's a public key (32 bytes)
               try {
-                const decoded = Uint8Array.from(atob(data), c => c.charCodeAt(0));
+                const decoded = base64ToUint8Array(data);
                 console.log('[WS] Decoded reassembled message length:', decoded.length);
                 
                 // Log the first few bytes for debugging
@@ -680,7 +693,7 @@ export default function App() {
           
           // Case A: Check if it's a public key (32 bytes)
           try {
-            const decoded = Uint8Array.from(atob(data), c => c.charCodeAt(0));
+            const decoded = base64ToUint8Array(data);
             console.log('[WS] Decoded message length:', decoded.length);
             
             // Log the first few bytes for debugging
