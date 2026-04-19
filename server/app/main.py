@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api import queues, messages, websocket, stats
+from app.api import fhe
 from app.core.config import settings
 from app.services.decoy import DecoyTrafficService
 from app.services.expiry import QueueExpiryService
@@ -90,6 +91,7 @@ app.include_router(queues.router, prefix="/api/v1", tags=["Queues"])
 app.include_router(messages.router, prefix="/api/v1", tags=["Messages"])
 app.include_router(websocket.router, tags=["WebSocket"])
 app.include_router(stats.router, prefix="/api/v1", tags=["Stats & Audit"])
+app.include_router(fhe.router, prefix="/api/v1/fhe", tags=["FHE"])
 
 
 @app.get("/", tags=["Health"])
