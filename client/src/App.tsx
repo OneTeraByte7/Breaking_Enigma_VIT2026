@@ -17,8 +17,9 @@ type Message = {
 
 type View = 'LANDING' | 'MESSENGER' | 'DASHBOARD';
 
-// Get API base URL dynamically. Defaults to deployed backend unless running local dev server.
-const DEPLOYED_BACKEND = 'https://breaking-enigma-vit26.onrender.com';
+// Get API base URL dynamically. Defaults to local backend for development.
+// Reverted to localhost for quick local testing / dev builds.
+const DEPLOYED_BACKEND = 'http://localhost:8000';
 const getAPIBase = () => {
   // Local development (vite / react dev server)
   if (window.location.port === '3000' || window.location.port === '5173') {
