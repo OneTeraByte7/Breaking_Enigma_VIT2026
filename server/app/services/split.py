@@ -18,6 +18,7 @@ import secrets
 import base64
 import logging
 from datetime import datetime, timezone
+import hashlib
 from typing import Optional
 
 from app.core.config import settings
@@ -72,6 +73,9 @@ async def split_and_deliver(queue_id: str, ciphertext_b64: str, message_id: str,
 
     # Schedule part 1 with random delay
     delay = secrets.SystemRandom().uniform(0, settings.SPLIT_DELIVERY_MAX_DELAY)
+    logger.info(
+        f"Split delivery scheduled for msg {message_id[:8]}... delay={delay:.3f}s (generated via secrets.SystemRandom().uniform - CSPRNG)"
+    )
     asyncio.create_task(_delayed_part1(queue_id, part1_msg, delay, message_id))
 
 
