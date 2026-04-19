@@ -17,16 +17,19 @@ type Message = {
 
 type View = 'LANDING' | 'MESSENGER' | 'DASHBOARD';
 
-// Get API base URL dynamically
+// Get API base URL dynamically. Defaults to deployed backend unless running local dev server.
+const DEPLOYED_BACKEND = 'https://breaking-enigma-vit26.onrender.com';
 const getAPIBase = () => {
-  // In development, backend is on port 8000
+  // Local development (vite / react dev server)
   if (window.location.port === '3000' || window.location.port === '5173') {
     return 'http://localhost:8000';
   }
-  // In production, use the same host
-  const protocol = window.location.protocol;
-  const host = window.location.host;
-  return `${protocol}//${host}`;
+  // If running on file:// or in CI preview, prefer deployed backend
+  if (!window.location.hostname || window.location.hostname === '127.0.0.1') {
+    return DEPLOYED_BACKEND;
+  }
+  // Default: use deployed backend to communicate with relay
+  return DEPLOYED_BACKEND;
 };
 
 const bytesToBase64 = (bytes: Uint8Array): string => {
@@ -466,6 +469,14 @@ export default function App() {
       let wsHost = window.location.host;
       if (window.location.port === '3000' || window.location.port === '5173') {
         wsHost = 'localhost:8000';
+      } else {
+        // For deployed frontend, point WS to deployed backend host
+        try {
+          const url = new URL(DEPLOYED_BACKEND);
+          wsHost = url.host;
+        } catch (e) {
+          // fallback to current host
+        }
       }
       const wsUrl = `${protocol}//${wsHost}/ws/${queueId}`;
       
