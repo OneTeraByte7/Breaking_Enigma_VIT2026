@@ -143,6 +143,15 @@ export default function App() {
   const [agentSensitivity, setAgentSensitivity] = useState<number>(() => {
     try { return Number(window.localStorage.getItem('velora.agent.sensitivity') || '3'); } catch { return 3; }
   });
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const audioUnlockedRef = useRef<boolean>(false);
+
+  // Ensure agentEnabled persisted when toggled
+  const toggleAgentEnabled = (next?: boolean) => {
+    const val = typeof next === 'boolean' ? next : !agentEnabled;
+    setAgentEnabled(val);
+    try { window.localStorage.setItem('velora.agent.enabled', val ? 'true' : 'false'); } catch {}
+  };
   
   const tpkRef = useRef<Uint8Array | null>(null); // Ref for theirPublicKey to use in WS callbacks
   const tpkSetter = (pk: Uint8Array | null) => {
@@ -797,7 +806,13 @@ export default function App() {
   // Play a short alert tone locally (WebAudio) — no network involved
   const playAlertTone = () => {
     try {
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      // Ensure we have an initialized AudioContext (user gesture may be required)
+      const ctx = audioCtxRef.current || new (window.AudioContext || (window as any).webkitAudioContext)();
+      audioCtxRef.current = ctx;
+      if (ctx.state === 'suspended' && !audioUnlockedRef.current) {
+        // Try to resume; may still require a user gesture in some browsers
+        ctx.resume().then(() => { audioUnlockedRef.current = true; }).catch(() => {});
+      }
       const o = ctx.createOscillator();
       const g = ctx.createGain();
       o.type = 'sine';
@@ -811,13 +826,34 @@ export default function App() {
       o.start(now);
       g.gain.exponentialRampToValueAtTime(0.0001, now + 0.35);
       o.stop(now + 0.36);
-      // Close context after short timeout to free resources
-      setTimeout(() => { try { ctx.close(); } catch {} }, 1000);
     } catch (e) {
-      // Fallback: try simple beep via alert (very rare)
-      try { (window as any).Audio && new Audio().play(); } catch {}
+      // Fallback: try simple beep via new Audio() using a tiny data URI
+      try {
+        const ctxAudio = (window as any).Audio;
+        if (ctxAudio) new Audio().play();
+      } catch {}
     }
   };
+
+  // Try to pre-initialize AudioContext on first user gesture so alerts can play
+  useEffect(() => {
+    const initAudio = async () => {
+      try {
+        if (!audioCtxRef.current) {
+          const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+          audioCtxRef.current = ctx;
+          if (ctx.state === 'suspended') {
+            await ctx.resume();
+          }
+          audioUnlockedRef.current = true;
+        }
+      } catch {}
+    };
+    const one = () => { initAudio(); window.removeEventListener('pointerdown', one); window.removeEventListener('keydown', one); };
+    window.addEventListener('pointerdown', one);
+    window.addEventListener('keydown', one);
+    return () => { window.removeEventListener('pointerdown', one); window.removeEventListener('keydown', one); };
+  }, []);
 
   // Normalize text for matching: lowercase, remove diacritics, strip punctuation
   const normalizeText = (s: string) =>
@@ -1312,6 +1348,15 @@ export default function App() {
              }`}
            >
              {panicMode ? 'Persona Active' : 'Panic'}
+           </button>
+           <button
+             onClick={() => toggleAgentEnabled()}
+             title="Toggle local agent sound (persisted)"
+             className={`px-3 py-1 border text-[10px] font-mono uppercase tracking-widest font-bold transition-colors ${
+               agentEnabled ? 'border-green-500 text-green-600 hover:bg-green-600 hover:text-white' : 'border-line text-ink/60 hover:bg-ink/5'
+             }`}
+           >
+             {agentEnabled ? 'Agent: Sound ON' : 'Agent: Sound OFF'}
            </button>
         </div>
       </div>
