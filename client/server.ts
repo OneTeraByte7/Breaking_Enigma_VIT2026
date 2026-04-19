@@ -187,9 +187,9 @@ async function startServer() {
     if (activeQueueIds.length === 0) return;
 
     activeQueueIds.forEach(queueId => {
-      // Chance to send decoy
-      if (Math.random() > 0.3) { // Send decoy 70% of intervals
-        const fakeBlob = crypto.randomBytes(64 + Math.floor(Math.random() * 192)).toString('base64');
+      // Chance to send decoy (70% of intervals)
+      if (crypto.randomInt(100) < 70) {
+        const fakeBlob = crypto.randomBytes(64 + crypto.randomInt(192)).toString('base64');
         stats.decoyMessages++;
         subscribers[queueId].forEach(sub => {
           if (sub.readyState === WebSocket.OPEN) {
