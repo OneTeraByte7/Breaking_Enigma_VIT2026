@@ -81,6 +81,9 @@ class InMemoryStore:
             if state is None or state.expired:
                 return
 
+            # Persist a marker indicating whether this was a decoy so
+            # later cleanup can adjust real/total counters correctly.
+            message["_is_decoy"] = bool(is_decoy)
             state.messages.append(message)
             state.total_message_count += 1
             if not is_decoy:
@@ -96,6 +99,46 @@ class InMemoryStore:
 
     def all_queue_ids(self) -> List[str]:
         return list(self.queues.keys())
+
+    async def prune_expired_messages(self, queue_id: str):
+        """Remove messages from a queue that have expired (by expires_at ISO timestamp).
+
+        Adjust counters to remain consistent.
+        """
+        async with self._lock:
+            state = self.queues.get(queue_id)
+            if not state:
+                return
+            from datetime import datetime, timezone
+
+            now = datetime.now(timezone.utc)
+            new_messages = []
+            for m in state.messages:
+                expires = m.get("expires_at")
+                if expires:
+                    try:
+                        exp_dt = datetime.fromisoformat(expires)
+                    except Exception:
+                        new_messages.append(m)
+                        continue
+                    if exp_dt <= now:
+                        # Remove this message and adjust counters
+                        state.total_message_count = max(0, state.total_message_count - 1)
+                        if not m.get("_is_decoy", False):
+                            state.real_message_count = max(0, state.real_message_count - 1)
+                        # Notify subscribers that a message expired (if we have an id)
+                        subs = list(self.subscribers.get(queue_id, []))
+                        msg_id = m.get("message_id") or m.get("mid")
+                        expiry_notice = {"type": "message_expired", "message_id": msg_id, "timestamp": now.isoformat(),}
+                        for sub_q in subs:
+                            # schedule put without awaiting to avoid deadlocks
+                            try:
+                                await sub_q.put(expiry_notice)
+                            except Exception:
+                                pass
+                        continue
+                new_messages.append(m)
+            state.messages = new_messages
 
 
 # Singleton — imported everywhere

@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     # Queue settings
     QUEUE_ID_BYTES: int = 32          # 32 random bytes → 64-char hex queue ID
     MAX_MESSAGES_PER_QUEUE: int = 50  # Auto-expire after this many real messages
-    QUEUE_EXPIRY_CHECK_INTERVAL: int = 30  # seconds between expiry sweeps
+    QUEUE_EXPIRY_CHECK_INTERVAL: int = 1  # seconds between expiry sweeps (short for testing)
 
     # Decoy traffic
     DECOY_INTERVAL_SECONDS: float = 5.0   # How often fake messages are injected
