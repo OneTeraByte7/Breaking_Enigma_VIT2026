@@ -1355,7 +1355,7 @@ export default function App() {
                     COPY
                   </button>
                 </div>
-                <p className="text-[10px] font-mono uppercase opacity-40 mb-3 mt-10 border-t border-line/10 pt-6">Or paste peer's code to join:</p>
+                <p className="text-[10px] font-mono uppercase opacity-40 mb-3 border-t border-line/10 pt-6">Or paste peer's code to join:</p>
                 <div className="flex gap-2 max-w-sm">
                   <input 
                     id="peer-id-input"
