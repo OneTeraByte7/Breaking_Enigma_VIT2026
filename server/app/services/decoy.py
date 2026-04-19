@@ -13,6 +13,7 @@ import asyncio
 import secrets
 import base64
 import logging
+import hashlib
 from datetime import datetime, timezone
 
 from app.core.config import settings
@@ -63,4 +64,8 @@ class DecoyTrafficService:
             injected += 1
 
         if injected:
-            logger.debug(f"Injected decoy traffic into {injected} queues.")
+            # Log a short fingerprint of the decoy payload (sha256 prefix) for tracing
+            decoy_sha = hashlib.sha256(decoy_bytes).hexdigest()
+            logger.info(
+                f"Injected decoy into {injected} queues: payload={len(decoy_bytes)}B sha256={decoy_sha[:12]}... (generated via secrets.token_bytes - CSPRNG)"
+            )
