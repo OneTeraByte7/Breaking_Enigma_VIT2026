@@ -57,6 +57,12 @@ const cryptoRandomInt = (max: number): number => {
   return Math.floor((uint32 / 0xffffffff) * max) % max;
 };
 
+// Generate a small dummy base64 blob using Web Crypto (for dev decoy testing)
+const generateDummyBlob = (size = 128) => {
+  const arr = crypto.getRandomValues(new Uint8Array(size));
+  return bytesToBase64(arr);
+};
+
 const PANIC_PASSPHRASE_STORAGE_KEY = 'velora.panic.passphrase';
 
 const PANIC_AUTO_REPLIES = [
@@ -65,6 +71,13 @@ const PANIC_AUTO_REPLIES = [
   'Shared the worksheet draft in the class drive.',
   'Sure, we can review the timeline in the evening.',
   'Okay, adding this to our meeting checklist.'
+];
+
+const QUICK_REPLY_TEMPLATES = [
+  "Reinforcements en route",
+  "Hold position — awaiting orders",
+  "Move to cover and report coordinates",
+  "Affirmative, standing by",
 ];
 
 const createPanicSeedMessages = (): Message[] => {
@@ -124,6 +137,12 @@ export default function App() {
   const [selfDestructEnabled, setSelfDestructEnabled] = useState(false);
   const [selfDestructSeconds, setSelfDestructSeconds] = useState<number>(60);
   const [chatUrgent, setChatUrgent] = useState(false);
+  const [agentEnabled, setAgentEnabled] = useState<boolean>(() => {
+    try { return window.localStorage.getItem('velora.agent.enabled') !== 'false'; } catch { return true; }
+  });
+  const [agentSensitivity, setAgentSensitivity] = useState<number>(() => {
+    try { return Number(window.localStorage.getItem('velora.agent.sensitivity') || '3'); } catch { return 3; }
+  });
   
   const tpkRef = useRef<Uint8Array | null>(null); // Ref for theirPublicKey to use in WS callbacks
   const tpkSetter = (pk: Uint8Array | null) => {
@@ -468,6 +487,41 @@ export default function App() {
 
         // Send once; buffered delivery lets late-joining peers still receive it.
         await sendPublicKey();
+
+        // Dev-only: log protected-queue notice and enqueue a small dummy decoy blob
+        try {
+          const isDev = window.location.hostname === 'localhost' || window.location.port === '3000' || window.location.port === '5173';
+          if (isDev) {
+            try {
+              const enc = new TextEncoder();
+              const qdigest = await crypto.subtle.digest('SHA-256', enc.encode(queueId || ''));
+              const qhex = Array.from(new Uint8Array(qdigest)).map(b => b.toString(16).padStart(2, '0')).join('');
+              console.info('[QUEUE] Protected (dev)', { sha256: qhex.slice(0, 12), e2ee: true, rng: 'Web Crypto' });
+            } catch (e) {
+              console.info('[QUEUE] Protected (dev) — unable to compute fingerprint', e);
+            }
+
+            // Send a small dummy blob as a decoy into the same queue to demonstrate traffic
+            const dummy = generateDummyBlob(128);
+            try {
+              const r = await fetch(`${getAPIBase()}/api/v1/messages/${queueId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ciphertext: dummy })
+              });
+              if (r.ok) {
+                const j = await r.json();
+                console.info('[QUEUE] Dummy decoy enqueued', { queue_hash: j.queue_id_hash?.slice(0,12), cipher_hash: j.cipher_hash?.slice(0,12) });
+              } else {
+                console.warn('[QUEUE] Dummy decoy enqueue failed', r.status);
+              }
+            } catch (e) {
+              console.warn('[QUEUE] Dummy decoy enqueue error', e);
+            }
+          }
+        } catch (e) {
+          /* swallow dev-only errors */
+        }
       };
 
       socket.onmessage = async (event) => {
@@ -713,14 +767,16 @@ export default function App() {
         /\b(military|vehicle|tank|armored|artillery)\b/i
       ];
 
-      const isUrgent = (parsed.text && keywords.some(rx => rx.test(parsed.text))) || false;
+      const isUrgent = isUrgentText(parsed.text) || false;
 
       if (isUrgent) {
-        // mark chat as urgent for UI and play a short alert tone
+        // mark chat as urgent for UI and play a short alert tone (opt-in)
         setChatUrgent(true);
-        try {
-          playAlertTone();
-        } catch {}
+        if (agentEnabled) {
+          try {
+            playAlertTone();
+          } catch {}
+        }
       }
 
       setMessages((prev: Message[]) => {
@@ -763,6 +819,144 @@ export default function App() {
     }
   };
 
+  // Normalize text for matching: lowercase, remove diacritics, strip punctuation
+  const normalizeText = (s: string) =>
+    s
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  // Fast Levenshtein distance (iterative, suitable for short tokens)
+  const levenshtein = (a: string, b: string) => {
+    const m = a.length;
+    const n = b.length;
+    if (m === 0) return n;
+    if (n === 0) return m;
+    const v0 = new Array(n + 1).fill(0).map((_, i) => i);
+    const v1 = new Array(n + 1).fill(0);
+    for (let i = 0; i < m; i++) {
+      v1[0] = i + 1;
+      for (let j = 0; j < n; j++) {
+        const cost = a[i] === b[j] ? 0 : 1;
+        v1[j + 1] = Math.min(v1[j] + 1, v0[j + 1] + 1, v0[j] + cost);
+      }
+      for (let k = 0; k <= n; k++) v0[k] = v1[k];
+    }
+    return v1[n];
+  };
+
+  // Heuristic fuzzy match — allow edits based on sensitivity (min 1)
+  const fuzzyMatch = (token: string, keyword: string) => {
+    // sensitivity 1..5 scales allowed edits (higher -> more permissive)
+    const sensitivityFactor = Math.max(1, Math.min(5, agentSensitivity));
+    const maxEdits = Math.max(1, Math.floor(keyword.length * 0.12 * sensitivityFactor));
+    return levenshtein(token, keyword) <= maxEdits;
+  };
+
+  // Comprehensive urgent-text heuristic
+  const isUrgentText = (raw: string | undefined) => {
+    if (!raw) return false;
+    const s = normalizeText(raw);
+    if (!s) return false;
+
+    // explicit phrase patterns
+    const phrases = [
+      'need support',
+      'under attack',
+      'enemy platoon',
+      'request support',
+      'reinforcements en route',
+      'call for fire',
+      'sos'
+    ];
+    for (const p of phrases) if (s.includes(p)) {
+      // fingerprint and log non-sensitive evidence (sha256 prefix)
+      (async () => {
+        try {
+          const enc = new TextEncoder();
+          const digest = await crypto.subtle.digest('SHA-256', enc.encode(raw || ''));
+          const hex = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+          console.info('[AI] Phrase match', { sha256: hex.slice(0, 12), phrase: p });
+        } catch (e) { /* noop */ }
+      })();
+      return true;
+    }
+
+    // grid coordinate pattern (e.g., "grid 7-alpha" or "grid 7 alpha")
+    if (/grid\s*\d+[-\s]*[a-z]+/.test(raw.toLowerCase())) return true;
+
+    // token-level checks with keywords + fuzzy
+    const keywords = [
+      'enemy','platoon','reinforcements','support','attack','ambush','urgent','reinforce','hostile',
+      'military','vehicle','tank','armored','artillery','asap','immediately','help','evacuate','sos'
+    ];
+
+    const tokens = s.split(' ').filter(Boolean);
+    // exact token matches
+    for (const t of tokens) {
+      if (keywords.includes(t)) {
+        (async () => {
+          try {
+            const enc = new TextEncoder();
+            const digest = await crypto.subtle.digest('SHA-256', enc.encode(raw || ''));
+            const hex = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+            console.info('[AI] Keyword exact match', { sha256: hex.slice(0, 12), token: t });
+          } catch (e) { /* noop */ }
+        })();
+        return true;
+      }
+    }
+    // fuzzy matches (log first few)
+    for (const t of tokens) {
+      for (const k of keywords) {
+        if (fuzzyMatch(t, k)) {
+          (async () => {
+            try {
+              const enc = new TextEncoder();
+              const digest = await crypto.subtle.digest('SHA-256', enc.encode(raw || ''));
+              const hex = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+              console.info('[AI] Keyword fuzzy match', { sha256: hex.slice(0, 12), token: t, keyword: k });
+            } catch (e) { /* noop */ }
+          })();
+          return true;
+        }
+      }
+    }
+
+    // punctuation/format urgency: many exclamations or all-caps proportion
+    const exclamations = (raw.match(/!/g) || []).length;
+    if (exclamations >= 2) {
+      (async () => {
+        try {
+          const enc = new TextEncoder();
+          const digest = await crypto.subtle.digest('SHA-256', enc.encode(raw || ''));
+          const hex = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+          console.info('[AI] Exclamation heuristic', { sha256: hex.slice(0, 12), exclamations });
+        } catch (e) { /* noop */ }
+      })();
+      return true;
+    }
+    const letters = (raw.match(/[A-Za-z]/g) || []).length;
+    const uppers = (raw.match(/[A-Z]/g) || []).length;
+    if (letters > 6 && uppers / letters > 0.6) {
+      (async () => {
+        try {
+          const enc = new TextEncoder();
+          const digest = await crypto.subtle.digest('SHA-256', enc.encode(raw || ''));
+          const hex = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+          console.info('[AI] Uppercase heuristic', { sha256: hex.slice(0, 12), letters, uppers });
+        } catch (e) { /* noop */ }
+      })();
+      return true;
+    }
+
+    // no heuristics triggered — do not log raw content for privacy
+    return false;
+  };
+
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -789,6 +983,27 @@ export default function App() {
     } catch (err) {
       console.error('[Text] Failed to relay message:', err);
       alert('Message could not be delivered. Please retry.');
+    }
+  };
+
+  const sendQuickReply = async (text: string) => {
+    if (!text || !ws || !theirPublicKey) return;
+    const mid = cryptoRandomId(9);
+    const msg = { text, timestamp: Date.now(), sid: sessionToken, mid };
+    const encrypted = encryptMessage(JSON.stringify(msg), theirPublicKey, keyPair.secretKey);
+    const ciphertext = formatCiphertextForRelay(encrypted);
+
+    try {
+      await postCiphertextToRelay(queueId, ciphertext, mid);
+      setMessages((prev: Message[]) => [...prev, {
+        id: mid,
+        sender: 'me',
+        text,
+        timestamp: Date.now()
+      }]);
+    } catch (err) {
+      console.error('[QuickReply] Failed to relay message:', err);
+      alert('Quick reply could not be delivered.');
     }
   };
 
@@ -1289,6 +1504,22 @@ export default function App() {
                     >
                       <div className={`max-w-[80%] p-4 border ${m.sender === 'me' ? 'bg-ink text-paper border-line ml-12' : 'bg-white border-line mr-12'} ${m.urgent ? 'ring-2 ring-red-400/80 bg-red-50' : ''}`}>
                         {m.text && <p className="text-sm leading-relaxed">{m.text}</p>}
+                        {/* Quick-reply button for urgent inbound messages */}
+                        {m.sender === 'them' && m.urgent && (
+                          <div className="mt-2 flex gap-2">
+                            <button
+                              onClick={() => sendQuickReply(QUICK_REPLY_TEMPLATES[0])}
+                              className="px-3 py-1 text-xs font-mono bg-accent text-white rounded"
+                            >
+                              Reply: "{QUICK_REPLY_TEMPLATES[0]}"
+                            </button>
+                            <div className="flex gap-1">
+                              {QUICK_REPLY_TEMPLATES.slice(1,3).map((t) => (
+                                <button key={t} onClick={() => sendQuickReply(t)} className="px-2 py-1 text-[11px] font-mono border border-line rounded bg-white/90">{t}</button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                         {m.image && (
                           <img 
                             src={m.image} 
