@@ -10,6 +10,7 @@ import hashlib
 import uuid
 import logging
 from datetime import datetime, timezone
+from datetime import timedelta
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -59,8 +60,14 @@ async def send_message(queue_id: str, body: SendMessageRequest):
     # Determine message_id for split delivery
     message_id = body.message_id or str(uuid.uuid4())
 
+    # Optional per-message expiry
+    expires_at_iso = None
+    if getattr(body, "self_destruct_seconds", None):
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=body.self_destruct_seconds)
+        expires_at_iso = expires_at.isoformat()
+
     # Split delivery (async — part 1 delayed, part 2 scheduled)
-    await split_and_deliver(queue_id, body.ciphertext, message_id)
+    await split_and_deliver(queue_id, body.ciphertext, message_id, expires_at_iso=expires_at_iso)
 
     # Refresh state after potential mutation
     state = store.get_queue(queue_id)
