@@ -1238,7 +1238,7 @@ export default function App() {
             <div className="bg-ink text-paper p-4 font-mono text-xs h-[400px] overflow-auto border border-line/20">
               <div className="text-accent mb-4 opacity-70"># HASH(QUEUE_ID) | HASH(BLOB) | TIMESTAMP</div>
               {auditLog.split('\n').filter((l: string) => l.trim()).map((line: string, i: number) => (
-                <div key={i} className="mb-1 border-b border-paper/5 pb-1 last:border-0 hover:bg-paper/5">
+                <div key={i} className="mb-1 border-b border-paper/5 pb-1 last:border-0 hover:bg-paper/5 break-all">
                   {line}
                 </div>
               ))}
