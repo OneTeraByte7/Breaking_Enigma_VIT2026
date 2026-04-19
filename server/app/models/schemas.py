@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Literal
 from datetime import datetime
 import base64
+from datetime import timezone
 
 
 # ─────────────────────────────────────────────
@@ -56,6 +57,11 @@ class SendMessageRequest(BaseModel):
         None,
         description="Optional client-generated UUID for split delivery reassembly.",
     )
+    self_destruct_seconds: Optional[int] = Field(
+        None,
+        description="Optional: number of seconds after which this message should be destroyed.",
+        ge=1,
+    )
 
     @field_validator("ciphertext")
     @classmethod
@@ -96,6 +102,7 @@ class WireMessage(BaseModel):
     total_parts: Optional[int] = None      # always 2 for split delivery
     timestamp: Optional[datetime] = None
     remaining_quota: Optional[int] = None  # for expiry_warning
+    expires_at: Optional[datetime] = None
 
 
 # ─────────────────────────────────────────────
