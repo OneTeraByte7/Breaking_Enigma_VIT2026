@@ -12,6 +12,7 @@ type Message = {
   voice?: string;
   timestamp: number;
   isDecoy?: boolean;
+  urgent?: boolean;
 };
 
 type View = 'LANDING' | 'MESSENGER' | 'DASHBOARD';
@@ -38,6 +39,22 @@ const bytesToBase64 = (bytes: Uint8Array): string => {
   }
 
   return btoa(binary);
+};
+
+// Return a URL-safe base64 id from browser CSPRNG
+const cryptoRandomId = (byteLen = 12): string => {
+  const arr = crypto.getRandomValues(new Uint8Array(byteLen));
+  // bytesToBase64 expects a Uint8Array
+  const b64 = bytesToBase64(arr);
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+};
+
+// Return a uniformly distributed integer in [0, max)
+const cryptoRandomInt = (max: number): number => {
+  if (max <= 0) return 0;
+  // Use 32-bit unsigned to have enough range
+  const uint32 = crypto.getRandomValues(new Uint32Array(1))[0];
+  return Math.floor((uint32 / 0xffffffff) * max) % max;
 };
 
 const PANIC_PASSPHRASE_STORAGE_KEY = 'velora.panic.passphrase';
@@ -80,7 +97,7 @@ export default function App() {
   const [keyPair] = useState(() => generateKeyPair());
   const keyPairRef = useRef(keyPair); // Stable reference to our keypair
   const sentOwnPKRef = useRef(false); // Track if we've already seen our own PK sent back
-  const [sessionToken] = useState(() => Math.random().toString(36).substring(2));
+  const [sessionToken] = useState(() => cryptoRandomId(12));
   const [theirPublicKey, setTheirPublicKey] = useState<Uint8Array | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
@@ -106,6 +123,7 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const [selfDestructEnabled, setSelfDestructEnabled] = useState(false);
   const [selfDestructSeconds, setSelfDestructSeconds] = useState<number>(60);
+  const [chatUrgent, setChatUrgent] = useState(false);
   
   const tpkRef = useRef<Uint8Array | null>(null); // Ref for theirPublicKey to use in WS callbacks
   const tpkSetter = (pk: Uint8Array | null) => {
@@ -242,7 +260,7 @@ export default function App() {
     setPanicMessages((prev) => [
       ...prev,
       {
-        id: `panic-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        id: `panic-${Date.now()}-${cryptoRandomId(6)}`,
         sender: 'me',
         text,
         timestamp: Date.now(),
@@ -250,18 +268,18 @@ export default function App() {
     ]);
     setPanicDraft('');
 
-    const autoReply = PANIC_AUTO_REPLIES[Math.floor(Math.random() * PANIC_AUTO_REPLIES.length)];
+    const autoReply = PANIC_AUTO_REPLIES[cryptoRandomInt(PANIC_AUTO_REPLIES.length)];
     window.setTimeout(() => {
       setPanicMessages((prev) => [
         ...prev,
         {
-          id: `panic-reply-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          id: `panic-reply-${Date.now()}-${cryptoRandomId(6)}`,
           sender: 'them',
           text: autoReply,
           timestamp: Date.now(),
         },
       ]);
-    }, 500 + Math.floor(Math.random() * 1000));
+    }, 500 + cryptoRandomInt(1000));
   };
 
   // Step 2: Queue Gen
@@ -354,7 +372,7 @@ export default function App() {
         reader.onload = async (e) => {
           const base64 = e.target?.result as string;
           if (ws && theirPublicKey) {
-            const mid = Math.random().toString(36).substring(7);
+              const mid = cryptoRandomId(9);
             const encrypted = encryptMessage(JSON.stringify({ voice: base64, sid: sessionToken, mid }), theirPublicKey, keyPair.secretKey);
             const ciphertext = formatCiphertextForRelay(encrypted);
 
@@ -689,17 +707,59 @@ export default function App() {
     }
     else {
       // Regular Message - Deduplicate by mid
+      // Keyword / urgent detection (local-only)
+      const keywords = [
+        /\b(enemy|platoon|reinforcements|support|attack|ambush|urgent|reinforce|hostile)\b/i,
+        /\b(military|vehicle|tank|armored|artillery)\b/i
+      ];
+
+      const isUrgent = (parsed.text && keywords.some(rx => rx.test(parsed.text))) || false;
+
+      if (isUrgent) {
+        // mark chat as urgent for UI and play a short alert tone
+        setChatUrgent(true);
+        try {
+          playAlertTone();
+        } catch {}
+      }
+
       setMessages((prev: Message[]) => {
         if (parsed.mid && prev.some((m: Message) => m.id === parsed.mid)) return prev;
         return [...prev, {
-          id: parsed.mid || Math.random().toString(36),
+          id: parsed.mid || cryptoRandomId(9),
           sender: 'them',
           text: parsed.text,
           image: parsed.image,
           voice: parsed.voice,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          urgent: isUrgent,
         }];
       });
+    }
+  };
+
+  // Play a short alert tone locally (WebAudio) — no network involved
+  const playAlertTone = () => {
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'sine';
+      o.frequency.value = 880;
+      g.gain.value = 0.0001;
+      o.connect(g);
+      g.connect(ctx.destination);
+      const now = ctx.currentTime;
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.exponentialRampToValueAtTime(0.25, now + 0.01);
+      o.start(now);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.35);
+      o.stop(now + 0.36);
+      // Close context after short timeout to free resources
+      setTimeout(() => { try { ctx.close(); } catch {} }, 1000);
+    } catch (e) {
+      // Fallback: try simple beep via alert (very rare)
+      try { (window as any).Audio && new Audio().play(); } catch {}
     }
   };
 
@@ -712,7 +772,7 @@ export default function App() {
   const sendMessage = async () => {
     if (!inputText.trim() || !ws || !theirPublicKey) return;
 
-    const mid = Math.random().toString(36).substring(7);
+    const mid = cryptoRandomId(9);
     const msg = { text: inputText, timestamp: Date.now(), sid: sessionToken, mid };
     const encrypted = encryptMessage(JSON.stringify(msg), theirPublicKey, keyPair.secretKey);
     const ciphertext = formatCiphertextForRelay(encrypted);
@@ -739,7 +799,7 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = async (e2) => {
       const base64 = e2.target?.result as string;
-      const mid = Math.random().toString(36).substring(7);
+      const mid = cryptoRandomId(9);
       const encrypted = encryptMessage(JSON.stringify({ image: base64, sid: sessionToken, mid }), theirPublicKey, keyPair.secretKey);
       const ciphertext = formatCiphertextForRelay(encrypted);
 
@@ -1207,6 +1267,11 @@ export default function App() {
         ) : (
         <div className="flex-1 flex flex-col md:flex-row p-4 md:p-8 overflow-hidden">
             <div className="flex-1 flex flex-col overflow-hidden">
+                  {chatUrgent && (
+                    <div className="w-full bg-red-600 text-white font-mono text-xs uppercase p-2 text-center">
+                      URGENT: Possible critical message detected — please review
+                    </div>
+                  )}
               <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-6 pr-2 scroll-smooth">
                 {messages.length === 0 && (
                   <div className="h-full flex flex-col items-center justify-center opacity-20 pointer-events-none">
@@ -1222,7 +1287,7 @@ export default function App() {
                       animate={{ opacity: 1, scale: 1, y: 0 }}
                       className={`flex ${m.sender === 'me' ? 'justify-end' : 'justify-start'}`}
                     >
-                      <div className={`max-w-[80%] p-4 border ${m.sender === 'me' ? 'bg-ink text-paper border-line ml-12' : 'bg-white border-line mr-12'}`}>
+                      <div className={`max-w-[80%] p-4 border ${m.sender === 'me' ? 'bg-ink text-paper border-line ml-12' : 'bg-white border-line mr-12'} ${m.urgent ? 'ring-2 ring-red-400/80 bg-red-50' : ''}`}>
                         {m.text && <p className="text-sm leading-relaxed">{m.text}</p>}
                         {m.image && (
                           <img 
@@ -1314,7 +1379,7 @@ export default function App() {
                           const reader = new FileReader();
                           reader.onload = async (event) => {
                             const base64 = event.target?.result as string;
-                            const mid = Math.random().toString(36).substring(7);
+                            const mid = cryptoRandomId(9);
                             const encrypted = encryptMessage(JSON.stringify({ voice: base64, sid: sessionToken, mid }), theirPublicKey, keyPair.secretKey);
                             const ciphertext = formatCiphertextForRelay(encrypted);
 
