@@ -1,8 +1,15 @@
-# 🔐 Breaking Enigma — Secure, Decoy-Enhanced Relay
+# 🔐 Breaking Enigma  Secure, Decoy-Enhanced Relay
 
 **Breaking Enigma** is an experimental, research-oriented secure messaging relay
 and reference client. It demonstrates practical techniques that make simple
 traffic analysis harder while preserving end-to-end encryption between peers.
+
+--
+
+![Top 50 Teams](https://img.shields.io/badge/Achievement-Top%2050%20Teams-orange?style=for-the-badge&logo=trophy)
+![Agentic AI](https://img.shields.io/badge/Domain-Agentic%20AI-purple?style=for-the-badge&logo=openai)
+![Python](https://img.shields.io/badge/Language-Python-yellow?style=for-the-badge&logo=python)
+![Status](https://img.shields.io/badge/Status-Completed-brightgreen?style=for-the-badge&logo=checkmarx)
 
 --
 
